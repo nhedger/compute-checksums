@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build action image
+        run: docker build --tag checksum-action:ci .
+
+  rust:
+    name: Rust Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  action-smoke:
+    name: Action Smoke Test
+    runs-on: ubuntu-latest
+    needs: [rust, docker-build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run local action
+        id: checksum
+        uses: ./
+        with:
+          patterns: |
+            fixtures/action/**/*.txt
+            !fixtures/action/ignored/**
+          algorithms: |
+            md5
+            sha256
+
+      - name: Validate action outputs
+        shell: bash
+        env:
+          ALL_JSON: ${{ steps.checksum.outputs.all }}
+          FILES_JSON: ${{ steps.checksum.outputs.files }}
+          MD5_SUM: ${{ steps.checksum.outputs.md5 }}
+          SHA256_SUM: ${{ steps.checksum.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+
+          expected_paths=("fixtures/action/a.txt" "fixtures/action/nested/b.txt")
+
+          mapfile -t actual_paths < <(jq -r '.[].path' <<<"$ALL_JSON")
+          [[ "${actual_paths[*]}" == "${expected_paths[*]}" ]] || {
+            echo "unexpected paths in all output: ${actual_paths[*]}"
+            exit 1
+          }
+
+          mapfile -t actual_file_keys < <(jq -r 'keys[]' <<<"$FILES_JSON")
+          [[ "${actual_file_keys[*]}" == "${expected_paths[*]}" ]] || {
+            echo "unexpected files keys: ${actual_file_keys[*]}"
+            exit 1
+          }
+
+          jq -e 'has("fixtures/action/ignored/skip.txt")' <<<"$FILES_JSON" >/dev/null && {
+            echo "excluded fixture unexpectedly appeared in files output"
+            exit 1
+          }
+
+          a_md5="$(jq -r '.["fixtures/action/a.txt"].md5' <<<"$FILES_JSON")"
+          a_sha256="$(jq -r '.["fixtures/action/a.txt"].sha256' <<<"$FILES_JSON")"
+          b_md5="$(jq -r '.["fixtures/action/nested/b.txt"].md5' <<<"$FILES_JSON")"
+          b_sha256="$(jq -r '.["fixtures/action/nested/b.txt"].sha256' <<<"$FILES_JSON")"
+
+          read -r exp_a_md5 _ < <(md5sum fixtures/action/a.txt)
+          read -r exp_a_sha256 _ < <(sha256sum fixtures/action/a.txt)
+          read -r exp_b_md5 _ < <(md5sum fixtures/action/nested/b.txt)
+          read -r exp_b_sha256 _ < <(sha256sum fixtures/action/nested/b.txt)
+
+          [[ "$a_md5" == "$exp_a_md5" ]] || { echo "unexpected md5 for fixtures/action/a.txt"; exit 1; }
+          [[ "$a_sha256" == "$exp_a_sha256" ]] || { echo "unexpected sha256 for fixtures/action/a.txt"; exit 1; }
+          [[ "$b_md5" == "$exp_b_md5" ]] || { echo "unexpected md5 for fixtures/action/nested/b.txt"; exit 1; }
+          [[ "$b_sha256" == "$exp_b_sha256" ]] || { echo "unexpected sha256 for fixtures/action/nested/b.txt"; exit 1; }
+
+          printf '%s\n' "$MD5_SUM" > MD5SUM.txt
+          printf '%s\n' "$SHA256_SUM" > SHA256SUM.txt
+          md5sum -c MD5SUM.txt
+          sha256sum -c SHA256SUM.txt
