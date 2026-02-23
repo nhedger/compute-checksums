@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build action image
+        run: docker build --tag checksum-action:ci .
+
+  rust:
+    name: Rust Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  action-smoke:
+    name: Action Smoke Test
+    runs-on: ubuntu-latest
+    needs: [rust, docker-build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Run local action
+        id: checksum
+        uses: ./
+        with:
+          patterns: |
+            fixtures/action/**/*.txt
+            !fixtures/action/ignored/**
+          algorithms: |
+            md5
+            sha256
+
+      - name: Validate action outputs
+        env:
+          ALL_JSON: ${{ steps.checksum.outputs.all }}
+          FILES_JSON: ${{ steps.checksum.outputs.files }}
+          MD5_SUM: ${{ steps.checksum.outputs.md5 }}
+          SHA256_SUM: ${{ steps.checksum.outputs.sha256 }}
+          A_MD5: ${{ fromJson(steps.checksum.outputs.files)['fixtures/action/a.txt'].md5 }}
+          A_SHA256: ${{ fromJson(steps.checksum.outputs.files)['fixtures/action/a.txt'].sha256 }}
+          B_MD5: ${{ fromJson(steps.checksum.outputs.files)['fixtures/action/nested/b.txt'].md5 }}
+          B_SHA256: ${{ fromJson(steps.checksum.outputs.files)['fixtures/action/nested/b.txt'].sha256 }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          all_entries = json.loads(os.environ["ALL_JSON"])
+          paths = [entry["path"] for entry in all_entries]
+          if paths != ["fixtures/action/a.txt", "fixtures/action/nested/b.txt"]:
+              raise SystemExit(f"unexpected checksum paths: {paths}")
+
+          files = json.loads(os.environ["FILES_JSON"])
+          expected_file_keys = ["fixtures/action/a.txt", "fixtures/action/nested/b.txt"]
+          if sorted(files.keys()) != expected_file_keys:
+              raise SystemExit(f"unexpected files keys: {sorted(files.keys())}")
+          if "fixtures/action/ignored/skip.txt" in files:
+              raise SystemExit("excluded fixture unexpectedly appeared in files output")
+
+          def digest(path: str, algorithm: str) -> str:
+              data = Path(path).read_bytes()
+              return hashlib.new(algorithm, data).hexdigest()
+
+          if os.environ["A_MD5"] != digest("fixtures/action/a.txt", "md5"):
+              raise SystemExit("unexpected md5 for fixtures/action/a.txt")
+          if os.environ["A_SHA256"] != digest("fixtures/action/a.txt", "sha256"):
+              raise SystemExit("unexpected sha256 for fixtures/action/a.txt")
+          if os.environ["B_MD5"] != digest("fixtures/action/nested/b.txt", "md5"):
+              raise SystemExit("unexpected md5 for fixtures/action/nested/b.txt")
+          if os.environ["B_SHA256"] != digest("fixtures/action/nested/b.txt", "sha256"):
+              raise SystemExit("unexpected sha256 for fixtures/action/nested/b.txt")
+
+          expected_md5_sum = "\n".join([
+              f"{digest('fixtures/action/a.txt', 'md5')}  fixtures/action/a.txt",
+              f"{digest('fixtures/action/nested/b.txt', 'md5')}  fixtures/action/nested/b.txt",
+          ])
+          if os.environ["MD5_SUM"] != expected_md5_sum:
+              raise SystemExit("unexpected md5 checksum output")
+
+          expected_sha256_sum = "\n".join([
+              f"{digest('fixtures/action/a.txt', 'sha256')}  fixtures/action/a.txt",
+              f"{digest('fixtures/action/nested/b.txt', 'sha256')}  fixtures/action/nested/b.txt",
+          ])
+          if os.environ["SHA256_SUM"] != expected_sha256_sum:
+              raise SystemExit("unexpected sha256 checksum output")
+          PY

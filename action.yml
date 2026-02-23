@@ -1,0 +1,46 @@
+name: Checksum
+description: Compute per-file checksums for files matching glob patterns.
+author: checksum
+
+inputs:
+  patterns:
+    description: |
+      Glob patterns to include or exclude. Use newline-separated values (preferred)
+      or comma-separated values. Prefix with ! for excludes.
+    required: true
+  algorithms:
+    description: |
+      Hash algorithms to compute for each file. Supports md5, sha1, sha256,
+      sha512. Use newline-separated values (preferred) or comma-separated values.
+    required: false
+    default: sha256
+  root:
+    description: Root directory to search from.
+    required: false
+    default: .
+  follow_symlinks:
+    description: Whether to follow symlinks during directory traversal.
+    required: false
+    default: "false"
+
+outputs:
+  all:
+    description: JSON array containing all per-file checksums.
+  files:
+    description: JSON object keyed by relative file path, containing digests by algorithm.
+  md5:
+    description: Checksum output for md5 (`digest  path`) when md5 is selected.
+  sha1:
+    description: Checksum output for sha1 (`digest  path`) when sha1 is selected.
+  sha256:
+    description: Checksum output for sha256 (`digest  path`) when sha256 is selected.
+  sha512:
+    description: Checksum output for sha512 (`digest  path`) when sha512 is selected.
+
+runs:
+  using: docker
+  image: Dockerfile
+
+branding:
+  icon: hash
+  color: blue
